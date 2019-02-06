@@ -1,0 +1,325 @@
+When talking about "Happy", I have three questions:
+
+    1. How many types of happy do we normally get? 
+    2. What kind of people would be much easier to feel happy?
+    3. What can make us happy?
+    
+Then we can explore the data with these three questions bearing in mind.
+
+### Step 0 - Load all the required libraries
+
+From the packages' descriptions:
+
++ `tm` is a framework for text mining applications within R;
++ `tidyverse` is an opinionated collection of R packages designed for data science. All packages share an underlying design philosophy, grammar, and data structures;
++ `tidytext` allows text mining using 'dplyr', 'ggplot2', and other tidy tools;
++ `DT` provides an R interface to the JavaScript library DataTables.
+
+```{r load libraries, warning=FALSE, message=FALSE}
+library(tm)
+library(tidytext)
+library(tidyverse)
+library(DT)
+library(ggplot2)
+library(dplyr)
+library(gridExtra)
+library(RColorBrewer)
+library(wordcloud)
+```
+
+### Step 1 - Load the data to be cleaned and processed
+
+```{r read data, warning=FALSE, message=FALSE}
+hm_data <- read_csv("/Users/Macbook/Downloads/HappyDB-master/happydb/data/cleaned_hm.csv")
+demo.data <- read_csv("/Users/Macbook/Downloads/HappyDB-master/happydb/data/demographic.csv")
+vad=read.csv("/Users/Macbook/Downloads/HappyDB-master/happydb/data/demographic.csv")
+```
+
+### Step 2 - Preliminary cleaning of text
+
+We clean the text by converting all the letters to the lower case, and removing punctuation, numbers, empty words and extra white space.
+
+```{r text processing in tm}
+corpus <- VCorpus(VectorSource(hm_data$cleaned_hm))%>%
+  tm_map(content_transformer(tolower))%>%
+  tm_map(removePunctuation)%>%
+  tm_map(removeNumbers)%>%
+  tm_map(removeWords, character(0))%>%
+  tm_map(stripWhitespace)
+```
+
+### Step 3 - Stemming words and converting tm object to tidy object
+
+Stemming reduces a word to its word *stem*. We stem the words here and then convert the "tm" object to a "tidy" object for much faster processing.
+
+```{r stemming}
+stemmed <- tm_map(corpus, stemDocument) %>%
+  tidy() %>%
+  select(text)
+```
+
+### Step 4 - Creating tidy format of the dictionary to be used for completing stems
+
+We also need a dictionary to look up the words corresponding to the stems.
+
+```{r tidy dictionary}
+dict <- tidy(corpus) %>%
+  select(text) %>%
+  unnest_tokens(dictionary, text)
+```
+
+### Step 5 - Removing stopwords that don't hold any significant information for our data set
+
+We remove stopwords provided by the "tidytext" package and also add custom stopwords in context of our data.
+
+```{r stopwords}
+data("stop_words")
+word <- c("happy","ago","yesterday","lot","today","months","month",
+                 "happier","happiest","last","week","past")
+stop_words <- stop_words %>%
+  bind_rows(mutate(tibble(word), lexicon = "updated"))
+```
+
+### Step 6 - Combining stems and dictionary into the same tibble
+
+Here we combine the stems and the dictionary into the same "tidy" object.
+
+```{r tidy stems with dictionary}
+completed <- stemmed %>%
+  mutate(id = row_number()) %>%
+  unnest_tokens(stems, text) %>%
+  bind_cols(dict) %>%
+  anti_join(stop_words, by = c("dictionary" = "word"))
+```
+
+### Step 7 - Stem completion
+
+Lastly, we complete the stems by picking the corresponding word with the highest frequency.
+
+```{r stem completion, warning=FALSE, message=FALSE}
+completed <- completed %>%
+  group_by(stems) %>%
+  dplyr::count(dictionary, sort = TRUE) %>%
+  mutate(word = dictionary[which.max(n)]) %>%
+  ungroup() %>%
+  select(stems, word) %>%
+  distinct() %>%
+  right_join(completed) %>%
+  select(-stems)
+```
+
+### Step 8 - Pasting stem completed individual words into their respective happy moments
+
+We want our processed words to resemble the structure of the original happy moments. So we paste the words together to form happy moments.
+
+```{r reverse unnest}
+completed <- completed %>%
+  group_by(id) %>%
+  summarise(text = str_c(word, collapse = " ")) %>%
+  ungroup()
+```
+
+
+### Exporting the processed text data into a CSV file
+```{r}
+write_csv(hm_data, "/Users/Macbook/Downloads/HappyDB-master/happydb/data/processed_moments.csv")
+```
+
+
+## Merge with demographic data
+
+```{r, echo= FALSE,message=FALSE, warning=FALSE}
+hm_data <- hm_data %>%
+  inner_join(demo.data, by = "wid") %>%
+  select(wid,
+         cleaned_hm,
+         gender, 
+         marital, 
+         parenthood,
+         reflection_period,
+         age, 
+         country, 
+         predicted_category) %>%
+  mutate(count = sapply(hm_data$cleaned_hm, wordcount)) %>%
+  filter(gender %in% c("m", "f")) %>%
+  filter(parenthood %in% c("n", "y")) %>%
+  filter(reflection_period %in% c("24h", "3m")) %>%
+  mutate(reflection_period = fct_recode(reflection_period, 
+                                        months_3 = "3m", hours_24 = "24h"))
+```
+
+## Data Exploration
+
+# Frequency of predicted category of happyniess
+```{r}
+category <- hm_data %>%
+  dplyr::count(predicted_category, sort = TRUE)
+category%>%
+  mutate(predicted_category = reorder(predicted_category, n)) %>%
+  ggplot(aes(predicted_category, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+# Frequency of happyniess lies in different marital conditions
+```{r}
+category <- hm_data %>%
+  dplyr::count(marital, sort = TRUE)
+category%>%
+  mutate(marital = reorder(marital, n)) %>%
+  ggplot(aes(marital, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+# Frequency of happyniess lies in different genders
+```{r}
+category <- hm_data %>%
+  dplyr::count(gender, sort = TRUE)
+category%>%
+  mutate(gender = reorder(gender, n)) %>%
+  ggplot(aes(gender, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+# Frequency of happyniess lies in different countries
+```{r}
+category <- hm_data %>%
+  dplyr::count(country, sort = TRUE)
+category%>%
+  mutate(country = reorder(country, n)) %>%
+  top_n(5, n) %>%
+  ggplot(aes(country, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+# Frequency of happyniess lies in different parenthood conditions
+```{r}
+category <- hm_data %>%
+  dplyr::count(parenthood, sort = TRUE)
+category%>%
+  mutate(parenthood = reorder(parenthood, n)) %>%
+  ggplot(aes(parenthood, n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+```
+
+From the above visualization process, we can see that happynies would most likely happen to American who are single, with no parenthood and enjoy affection and achievement.
+
+
+## Text analysis
+
+
+# Identify the most popular words in each happy category.
+```{r}
+freq <- hm_data %>%
+  select(wid,
+         predicted_category, 
+         cleaned_hm) %>%
+  unnest_tokens(word, cleaned_hm) %>%
+  anti_join(stop_words) %>% 
+  dplyr::count(wid, word, sort = TRUE) %>%
+  ungroup()
+
+category <- hm_data %>%
+  select(wid,
+         predicted_category)
+
+freq <- full_join(freq, category)
+
+
+freq %>% 
+  arrange(desc(n)) %>%
+  group_by(predicted_category) %>%
+  distinct(word, predicted_category, .keep_all = TRUE) %>%
+  top_n(5, n) %>% 
+  ungroup() %>%
+  mutate(word = factor(word, levels = rev(unique(word)))) %>%
+  ggplot(aes(word, n, fill = predicted_category)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~predicted_category, ncol = 2, scales = "free") +
+  coord_flip() +
+  labs(title = "Most Popular Expressions in Each Happy Category",
+       x = NULL, y = "Frequency")
+```
+
+The charts demonstrate the common expression in each category. 
+
+```{r}
+hm_data <- hm_data %>%
+  unnest_tokens(word, cleaned_hm) %>%
+  anti_join(stop_words)
+hm_data <- hm_data %>%
+  group_by(marital) %>%
+  dplyr::count(word,sort= TRUE)
+set.seed(0)
+hm_data %>%
+  acast(word ~ marital, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("hotpink2","limegreen"),
+                   max.words = 100)
+```
+
+
+## Correlation between features
+
+# Age group and oredicted happynies types
+```{r}
+ggplot(hm_data) +
+  geom_bar(aes(x=age, fill=factor((predicted_category)))) +
+  labs(fill="Predicted Happiness Categories") +
+  scale_x_discrete(limits = seq(0,100,5)) +
+  scale_y_discrete(limits=seq(0,100000,5000))
+```
+This chart demonstrates that younger people would be much easier to feel happy with things related to achievement and affection.
+
+## Gender and Happiness Categories
+```{r}
+gen1 <- hm_data %>%
+  group_by(gender) %>%
+  dplyr::count(predicted_category)
+set.seed(0)
+gen1 %>%
+  acast(predicted_category ~ gender, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("pink", "gray80"),
+                   max.words = 100)
+```
+
+This wordcloud shows that the happyniess of male could be more related to achievement, bonding, leisure, and affection is enjoyed by both female and male.
+
+## Parenthood and Happiness Categories
+
+```{r}
+gen1 <- hm_data %>%
+  group_by(parenthood) %>%
+  dplyr::count(predicted_category)
+set.seed(0)
+gen1 %>%
+  acast(predicted_category ~ parenthood, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("limegreen", "black"),
+                   max.words = 100)
+
+```
+
+This wordcloud demonstrates that the happyniess of people with no parenthood could be more related to achievement, bonding, leisure.
+
+## Marital situations and Happiness Categories
+
+```{r}
+gen1 <- hm_data %>%
+  group_by(marital) %>%
+  dplyr::count(predicted_category)
+set.seed(0)
+gen1 %>%
+  acast(predicted_category ~ marital, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("limegreen", "black"),
+                   max.words = 100)
+```
+
+From this wordcloud, we can see that widowed are much easier to feel happy by bondings, which is consistent with common sense.
